@@ -1,4 +1,4 @@
-
+#include "config.h"
 
 #ifndef USE_MAKE
 // #define F031_DEV

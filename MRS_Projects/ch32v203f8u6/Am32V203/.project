@@ -20,32 +20,31 @@
     <nature>org.eclipse.cdt.managedbuilder.core.managedBuildNature</nature>
     <nature>org.eclipse.cdt.managedbuilder.core.ScannerConfigNature</nature>
   </natures>
+  <linkedResources>
+    <link>
+      <name>v203</name>
+      <type>2</type>
+      <locationURI>PARENT-3-PROJECT_LOC/Mcu/v203</locationURI>
+    </link>
+    <link>
+      <name>Src</name>
+      <type>2</type>
+      <locationURI>PARENT-3-PROJECT_LOC/Src</locationURI>
+    </link>
+    <link>
+      <name>Inc</name>
+      <type>2</type>
+      <locationURI>PARENT-3-PROJECT_LOC/Inc</locationURI>
+    </link>
+  </linkedResources>
   <filteredResources>
     <filter>
-      <id>1595986042669</id>
       <name/>
-      <type>22</type>
+      <type>6</type>
       <matcher>
         <id>org.eclipse.ui.ide.multiFilter</id>
         <arguments>1.0-name-matches-false-false-*.wvproj</arguments>
       </matcher>
     </filter>
   </filteredResources>
-  <linkedResources>
-    <link>
-      <name>v203</name>
-      <type>2</type>
-      <location>PARENT-3-PROJECT_LOC/Mcu/v203</location>
-    </link>
-    <link>
-      <name>Src</name>
-      <type>2</type>
-      <location>PARENT-3-PROJECT_LOC/Src</location>
-    </link>
-    <link>
-      <name>Inc</name>
-      <type>2</type>
-      <location>PARENT-3-PROJECT_LOC/Inc</location>
-    </link>
-  </linkedResources>
 </projectDescription>
