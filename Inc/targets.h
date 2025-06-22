@@ -2378,6 +2378,12 @@
 
 /*****************************************************CH32V203 targets
  * ************************************************/
+
+ /* Add this only to help with VSCode recognizing the define*/
+#ifndef AIRBOT_V203
+#define AIRBOT_V203
+#endif
+
 #ifdef AIRBOT_V203
 //#define USE_PA2_AS_COMP
 #define FIRMWARE_NAME "AIRBOT_V203"

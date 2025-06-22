@@ -305,7 +305,7 @@
 				},
 				"createFlash": {
 					"enabled": true,
-					"outputFileFormat": "binary",
+					"outputFileFormat": "ihex",
 					"copy_only_section_text": false,
 					"copy_only_section_data": false,
 					"copy_only_sections": [],
@@ -634,9 +634,9 @@
 	"flashConfig": {
 		"mcutype": "CH32V20x",
 		"address": "0x08000000",
-		"target_path": "obj/Am32V203.hex",
+		"target_path": "C:\\Users\\santi\\PowerHouse\\Orbt\\AM32-Orbt-Fork\\MRS_Projects\\ch32v203f8u6\\Am32V203\\obj\\Am32V203.hex",
 		"clkSpeed": "High",
-		"debug_interface_mode": "1-wire serial",
+		"debug_interface_mode": "",
 		"erase": true,
 		"program": true,
 		"verify": true,
@@ -713,7 +713,7 @@
 			"showDebugOutputTimestamps": true
 		},
 		"reserve": {
-			"PROGRAM_NAME": "obj\\Am32V203.elf",
+			"PROGRAM_NAME": "obj/Am32V203.elf",
 			"PROJECT_ATTR": "Am32V203",
 			"PROJECT_BUILD_CONFIG_AUTO_ATTR": true,
 			"PROJECT_BUILD_CONFIG_ID_ATTR": "",
