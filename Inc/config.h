@@ -2,7 +2,7 @@
 #define __CONFIG_H__
 
 /* Main configuration */
-#define AIRBOT_V203
+#define ORBT_ESC_V203
 
 /* Debug */
 

@@ -2378,11 +2378,20 @@
 
 /*****************************************************CH32V203 targets
  * ************************************************/
+#ifndef ORBT_ESC_V203
+#define ORBT_ESC_V203
+#endif
+
+#ifdef ORBT_ESC_V203
+//#define USE_PA2_AS_COMP
+#define FIRMWARE_NAME "ORBT_V203"
+#define FILE_NAME "ORBT_V203"
+#define DEAD_TIME 75
+#define HARDWARE_GROUP_CH_A
+#define TARGET_VOLTAGE_DIVIDER 20
+#endif
 
  /* Add this only to help with VSCode recognizing the define*/
-#ifndef AIRBOT_V203
-#define AIRBOT_V203
-#endif
 
 #ifdef AIRBOT_V203
 //#define USE_PA2_AS_COMP
@@ -2390,6 +2399,7 @@
 #define FILE_NAME "AIRBOT_V203"
 #define DEAD_TIME 75
 #define HARDWARE_GROUP_CH_A
+#define TARGET_VOLTAGE_DIVIDER 20
 #endif
 
 #ifndef FIRMWARE_NAME
