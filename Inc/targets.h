@@ -2389,6 +2389,7 @@
 #define DEAD_TIME 75
 #define HARDWARE_GROUP_CH_A
 #define TARGET_VOLTAGE_DIVIDER 20
+#define USE_SPEED_CONTROL
 #endif
 
  /* Add this only to help with VSCode recognizing the define*/

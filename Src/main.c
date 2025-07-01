@@ -273,8 +273,12 @@ void zcfoundroutine(void);
 //=============================  Defaults =============================
 //===========================================================================
 
+#ifdef USE_SPEED_CONTROL
+uint8_t drive_by_rpm = 1;
+#else
 uint8_t drive_by_rpm = 0;
-uint32_t MAXIMUM_RPM_SPEED_CONTROL = 10000;
+#endif
+uint32_t MAXIMUM_RPM_SPEED_CONTROL = 14000;
 uint32_t MINIMUM_RPM_SPEED_CONTROL = 1000;
 
 // assign speed control PID values values are x10000
