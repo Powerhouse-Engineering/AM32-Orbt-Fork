@@ -736,9 +736,9 @@ void loadEEpromSettings()
         if (motor_kv < 300) {
             low_rpm_throttle_limit = 0;
         }
-        low_rpm_level = motor_kv / 100 / (32 / eepromBuffer.motor_poles);
+        low_rpm_level = (motor_kv / 4) / 100 / (32 / eepromBuffer.motor_poles);
 
-        high_rpm_level = motor_kv / 12 / (32 / eepromBuffer.motor_poles);				
+        high_rpm_level = (motor_kv / 4) / 12 / (32 / eepromBuffer.motor_poles);				
     }
     reverse_speed_threshold = map(motor_kv, 300, 3000, 1000, 500);
 }
