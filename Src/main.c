@@ -389,14 +389,14 @@ char lowkv = 0;
 
 uint16_t min_startup_duty = 120;
 uint16_t sin_mode_min_s_d = 120;
-char bemf_timeout = 10;
+char bemf_timeout = 30;
 
 char startup_boost = 50;
 char reversing_dead_band = 1;
 
 uint16_t low_pin_count = 0;
 
-uint8_t max_duty_cycle_change = 2;
+uint8_t max_duty_cycle_change = 1;
 char fast_accel = 1;
 char fast_deccel = 0;
 uint16_t last_duty_cycle = 0;
@@ -406,7 +406,7 @@ char play_tone_flag = 0;
 typedef enum { GPIO_PIN_RESET = 0U,
     GPIO_PIN_SET } GPIO_PinState;
 
-uint16_t startup_max_duty_cycle = 200;
+uint16_t startup_max_duty_cycle = 500;
 uint16_t minimum_duty_cycle = DEAD_TIME;
 uint16_t stall_protect_minimum_duty = DEAD_TIME;
 char desync_check = 0;
@@ -619,8 +619,8 @@ void loadEEpromSettings()
             minimum_duty_cycle = (eepromBuffer.startup_power / 2);
             stall_protect_minimum_duty = minimum_duty_cycle + 10;
 			}else{
-            min_startup_duty = (eepromBuffer.startup_power);
-            minimum_duty_cycle = (eepromBuffer.startup_power / 3);
+            min_startup_duty = (eepromBuffer.startup_power*2);
+            minimum_duty_cycle = (eepromBuffer.startup_power *2);
             stall_protect_minimum_duty = minimum_duty_cycle + 10;
 			}
     } else {
