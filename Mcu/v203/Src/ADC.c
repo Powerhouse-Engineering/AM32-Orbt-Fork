@@ -9,16 +9,18 @@
 
 #include "functions.h"
 #ifdef USE_ADC
-#ifdef USE_ADC_INPUT
-uint16_t ADCDataDMA[4];
-#else
-uint16_t ADCDataDMA[3];
+#if defined(USE_ADC_INPUT) && defined(USE_VREF_CALIBRATION)
+#error "vref calibration scan is not wired up for ADC-input targets"
 #endif
+uint16_t ADCDataDMA[4]; // sized for the largest scan: 3 base channels + input or Vrefint
 
 extern uint16_t ADC_raw_temp;
 extern uint16_t ADC_raw_volts;
 extern uint16_t ADC_raw_current;
 extern uint16_t ADC_raw_input;
+#ifdef USE_VREF_CALIBRATION
+extern uint16_t ADC_raw_vref;
+#endif
 
 void ADC_DMA_Callback()
 { // read dma buffer and set extern variables
@@ -31,6 +33,9 @@ void ADC_DMA_Callback()
 
 #else
     ADC_raw_temp = ADCDataDMA[2];
+#ifdef USE_VREF_CALIBRATION
+    ADC_raw_vref = ADCDataDMA[3];
+#endif
 #ifdef PA6_VOLTAGE
     ADC_raw_volts = ADCDataDMA[1];
     ADC_raw_current = ADCDataDMA[0];
@@ -53,6 +58,8 @@ void ADCInit(void)
     DMA_InitStructure.DMA_MemoryBaseAddr = (u32)&ADCDataDMA[0];
     DMA_InitStructure.DMA_DIR = DMA_DIR_PeripheralSRC;
 #ifdef USE_ADC_INPUT
+    DMA_InitStructure.DMA_BufferSize = 4;
+#elif defined(USE_VREF_CALIBRATION)
     DMA_InitStructure.DMA_BufferSize = 4;
 #else
     DMA_InitStructure.DMA_BufferSize = 3;
@@ -98,6 +105,8 @@ void ADCInit(void)
    ADC_InitStruct.ADC_DataAlign = ADC_DataAlign_Right;
  #ifdef USE_ADC_INPUT
    ADC_InitStruct.ADC_NbrOfChannel = 4;
+ #elif defined(USE_VREF_CALIBRATION)
+   ADC_InitStruct.ADC_NbrOfChannel = 4;
  #else
    ADC_InitStruct.ADC_NbrOfChannel = 3;
  #endif
@@ -113,6 +122,10 @@ void ADCInit(void)
    ADC_RegularChannelConfig(ADC1, ADC_Channel_1, 1, ADC_SampleTime_7Cycles5);
    ADC_RegularChannelConfig(ADC1, ADC_Channel_6, 2, ADC_SampleTime_7Cycles5);
    ADC_RegularChannelConfig(ADC1, ADC_Channel_TempSensor, 3, ADC_SampleTime_7Cycles5);
+ #ifdef USE_VREF_CALIBRATION
+   // Vrefint needs >=17.1us sampling: 239.5 cycles at the 12MHz ADC clock is ~20us
+   ADC_RegularChannelConfig(ADC1, ADC_Channel_Vrefint, 4, ADC_SampleTime_239Cycles5);
+ #endif
  #endif
 
 

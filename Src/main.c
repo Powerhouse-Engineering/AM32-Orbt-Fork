@@ -433,6 +433,10 @@ uint16_t ADC_raw_temp;
 uint16_t ADC_raw_volts;
 uint16_t ADC_raw_current;
 uint16_t ADC_raw_input;
+#ifdef USE_VREF_CALIBRATION
+uint16_t ADC_raw_vref = 1489; // ~1.20V on a 3.30V rail until the first conversion lands
+uint16_t adc_vdd_mv = 3300; // VDD rail in mV, measured through the internal reference
+#endif
 uint8_t adc_counter = 0;
 char send_telemetry = 0;
 char telemetry_done = 0;
@@ -1102,6 +1106,26 @@ if (!stepper_sine && armed) {
             } else {
                 duty_cycle_setpoint = map(input, 47, 2047, minimum_duty_cycle, 2000);
             }
+#ifdef USE_VOLTAGE_COMPENSATION
+            { // scale duty so the applied voltage matches a VOLTAGE_COMP_BASE_CV pack;
+              // the startup/maximum/current-limit clamps below still bound the result
+                uint16_t comp_cv = battery_voltage;
+                uint32_t comp_duty;
+                if (comp_cv < VOLTAGE_COMP_MIN_CV) {
+                    comp_cv = VOLTAGE_COMP_MIN_CV;
+                }
+                if (comp_cv > VOLTAGE_COMP_MAX_CV) {
+                    comp_cv = VOLTAGE_COMP_MAX_CV;
+                }
+                // bound before the single setpoint write: the 20kHz interrupt reads
+                // duty_cycle_setpoint between here and the clamps further down
+                comp_duty = ((uint32_t)duty_cycle_setpoint * VOLTAGE_COMP_BASE_CV) / comp_cv;
+                if (comp_duty > 2000) {
+                    comp_duty = 2000;
+                }
+                duty_cycle_setpoint = (uint16_t)comp_duty;
+            }
+#endif
 
             if (!eepromBuffer.rc_car_reverse) {
                 prop_brake_active = 0;
@@ -1398,7 +1422,17 @@ void tenKhzRoutine()
             if (eepromBuffer.variable_pwm) {
             }
             adjusted_duty_cycle = ((duty_cycle * tim1_arr) / 2000) + 1;
-
+#ifdef USE_DEADTIME_COMPENSATION
+            // motoring current freewheels through the low-side diode during dead
+            // time, losing one DEAD_TIME of on-time per PWM period; add it back in
+            // timer ticks so the correction tracks tim1_arr (variable pwm frequency).
+            // saturate to tim1_arr + 1 (CCR > ARR): compare never matches, output
+            // stays solid-on with no switching, same as the stock full-throttle state
+            adjusted_duty_cycle += (DEADTIME_COMP_NS * CPU_FREQUENCY_MHZ) / 1000;
+            if (adjusted_duty_cycle > tim1_arr + 1) {
+                adjusted_duty_cycle = tim1_arr + 1;
+            }
+#endif
         } else {
 
             if (prop_brake_active) {
@@ -1974,7 +2008,14 @@ if(zero_crosses < 5){
             converted_degrees = getConvertedDegrees(ADC_raw_temp);
 #endif
             degrees_celsius = converted_degrees;
+#ifdef USE_VREF_CALIBRATION
+            if ((ADC_raw_vref > 1000) && (ADC_raw_vref < 2200)) { // accept rails of roughly 2.2V-4.9V
+                adc_vdd_mv = ((7 * adc_vdd_mv) + (uint16_t)((uint32_t)VREFINT_MV * 4095 / ADC_raw_vref)) >> 3;
+            }
+            battery_voltage = ((7 * battery_voltage) + ((ADC_raw_volts * adc_vdd_mv / 4095 * VOLTAGE_DIVIDER) / 100)) >> 3;
+#else
             battery_voltage = ((7 * battery_voltage) + ((ADC_raw_volts * 3300 / 4095 * VOLTAGE_DIVIDER) / 100)) >> 3;
+#endif
             smoothed_raw_current = getSmoothedCurrent();
             actual_current = ((smoothed_raw_current * 3300 / 41) - (CURRENT_OFFSET * 100)) / (MILLIVOLT_PER_AMP);
             if (actual_current < 0) {

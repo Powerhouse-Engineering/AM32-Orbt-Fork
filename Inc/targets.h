@@ -2389,6 +2389,18 @@
 #define DEAD_TIME 75
 #define HARDWARE_GROUP_CH_A
 #define TARGET_VOLTAGE_DIVIDER 20
+// measure VDD through the internal 1.2V reference instead of assuming a 3.30V rail
+#define USE_VREF_CALIBRATION
+#define VREFINT_MV 1200 // CH32V203 datasheet: 1.17V-1.23V over temperature
+// feed-forward throttle compensation: commanded duty produces the same applied
+// voltage as it would on a VOLTAGE_COMP_BASE_CV pack
+#define USE_VOLTAGE_COMPENSATION
+#define VOLTAGE_COMP_BASE_CV 370 // 10mV units
+#define VOLTAGE_COMP_MIN_CV 300 // clamp window for the correction factor
+#define VOLTAGE_COMP_MAX_CV 450
+// add back the on-time lost to bridge dead time each PWM period (motoring direction)
+#define USE_DEADTIME_COMPENSATION
+#define DEADTIME_COMP_NS 1563 // -> 75 ticks of the 48MHz timer = DEAD_TIME; trim for FET switching delay
 // #define USE_SPEED_CONTROL
 #endif
 
