@@ -11,6 +11,8 @@ Keil_Projects/Listings
 *.elf
 *.d
 *.hex
+!releases/
+!releases/**
 *.log
 *~
 *.map
