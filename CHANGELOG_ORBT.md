@@ -5,6 +5,24 @@ versions. The active Orbt branch is `Orbt-main`; upstream `main` is separate.
 Firmware, bootloader/configuration combinations, checksums, and raw BIN files
 are archived under [releases](releases/README.md).
 
+## 1.4.1 - DShot timer rollover (2026-09-17)
+
+- Apply the 16-bit capture subtraction fix supplied by Julian, also present
+  upstream in `4849bc54894dd8c58cd6e2b3ecbc0ef41b3f4a82` (Edward Li).
+  Wrapped captures now produce the correct frame length during ordinary
+  DShot frame learning.
+- Add a regression covering normal, wrapped, and mixed frame windows.
+  All 12 source-backed regression groups pass; removing the cast fails it.
+- Keep the coast/release protocol, voltage compensation, and internal
+  **ORBT_V203 2.19** identity unchanged. Flash grows by 4 bytes to 20592;
+  RAM stays at 4440 bytes. Standalone WCH GCC 12 builds without warnings.
+- Archive app-only and M1/M2 bootloader/config HEX and BIN images, checksums,
+  and build provenance. The published application reproduces byte-for-byte.
+
+This fix is not on the V203 bidirectional frame-learning path and is not a
+proven fix for the bench controller's `rpm_feedback_lost` event. Version
+1.4.1 has been compiled and host-tested; it has not been flashed or motor-tested.
+
 ## 1.4.0 — Latched coast (2026-09-17)
 
 - Add custom DShot **15 = coast**, **16 = release coast**. Six accepted

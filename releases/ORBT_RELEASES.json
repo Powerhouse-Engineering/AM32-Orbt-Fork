@@ -142,5 +142,41 @@
     "gap_fill": "0xFF",
     "hex_sha256": "590f9958bb2332df0956bfebd1d5ec182084ab43f60451ca31b8a120029ef120",
     "bin_sha256": "be3dde75d5867c045a4d84bee9325d4c1fbf287cd2b5ed87a3bec8d005e2302a"
+  },
+  {
+    "version": "1.4.1",
+    "hex": "Am32V203_Orbt_ESC__2026_9_17__1.4.1_coasting.hex",
+    "bin": "Am32V203_Orbt_ESC__2026_9_17__1.4.1_coasting.bin",
+    "load_address": "0x00001000",
+    "mapped_flash_address": "0x08001000",
+    "payload_bytes": 20628,
+    "bin_span_bytes": 59392,
+    "gap_fill": "0xFF",
+    "hex_sha256": "fd303a8e5da595e46f534ac7d22fd0ce3488fde08912bbc414d69e28dad971fa",
+    "bin_sha256": "58b0c33861f3948cf1ee05459e28209bac59c407a0e14994b07f21231d1aeebb"
+  },
+  {
+    "version": "1.4.1",
+    "hex": "Am32V203_Orbt_ESC__2026_9_17__1.4.1_coasting_With_Bootloader_M1.hex",
+    "bin": "Am32V203_Orbt_ESC__2026_9_17__1.4.1_coasting_With_Bootloader_M1.bin",
+    "load_address": "0x00000000",
+    "mapped_flash_address": "0x08000000",
+    "payload_bytes": 24732,
+    "bin_span_bytes": 63552,
+    "gap_fill": "0xFF",
+    "hex_sha256": "4263d4db27df9f10c346c07bde076dec4cb3a85cd6cd7f0d9e1bf8b23bc4e270",
+    "bin_sha256": "85d51001b368911376b700a910c529233cdc8180e69facfa8389a6af032fbf9b"
+  },
+  {
+    "version": "1.4.1",
+    "hex": "Am32V203_Orbt_ESC__2026_9_17__1.4.1_coasting_With_Bootloader_M2.hex",
+    "bin": "Am32V203_Orbt_ESC__2026_9_17__1.4.1_coasting_With_Bootloader_M2.bin",
+    "load_address": "0x00000000",
+    "mapped_flash_address": "0x08000000",
+    "payload_bytes": 24732,
+    "bin_span_bytes": 63552,
+    "gap_fill": "0xFF",
+    "hex_sha256": "fc71fc851d91c76c04d2ce2f406f911f230a89e0bdf06d60c761491debbbf3c9",
+    "bin_sha256": "65ece0e7667efb4ea7ecdc758eae862a0a136a73ef4b59784b9e45ae84884982"
   }
 ]

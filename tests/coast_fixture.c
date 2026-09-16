@@ -110,6 +110,34 @@ static void confirm_release(void) { for (int i = 0; i < 6; ++i) decode(16); }
 
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
+    // Learning uses a 32-bit accumulator but capture timestamps wrap at 16 bits.
+    // Exercise the real transfer-complete/decode path, including a mixed window
+    // where just one of the eight learned frames crosses the timer rollover.
+    for (unsigned pattern = 0; pattern < 4; ++pattern) {
+        reset();
+        armed = running = 0;
+        newinput = input = 0;
+        zero_input_count = dshot_arm_zero_count = 6;
+        average_count = average_packet_length = 0;
+        unsigned span = 0;
+        for (unsigned frame = 0; frame < 8; ++frame) {
+            packet(0, 0);
+            span = dma_buffer[31] - dma_buffer[0];
+            unsigned start = pattern == 0 ? 1000 : pattern == 1 ? 65000 :
+                             pattern == 2 ? (frame == 3 ? 65000 : 1000) : 65535;
+            for (unsigned edge = 0; edge < 32; ++edge)
+                dma_buffer[edge] = (uint16_t)(dma_buffer[edge] + start);
+            transfercomplete();
+            assert(average_packet_length == span * (frame + 1));
+        }
+        assert(average_count == 8);
+        assert(dshot_frametime_low == span - ((span * 8) >> 7));
+        assert(dshot_frametime_high == span + ((span * 8) >> 7));
+        unsigned accepted = dshot_goodcounts;
+        decode(0);
+        assert(dshot_goodcounts == accepted + 1);
+    }
+    puts("PASS: DShot frame learning before/across 16-bit rollover and subsequent decode");
 
     reset();
     for (int i = 0; i < 5; ++i) { decode(15); assert(!coast_request && newinput == 700); }
