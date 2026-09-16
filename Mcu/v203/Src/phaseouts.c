@@ -10,8 +10,36 @@
 #include "functions.h"
 #include "targets.h"
 #include "common.h"
+#include "interrupt.h"
 
 extern char prop_brake_active;
+extern char armed;
+extern volatile uint8_t coast_request;
+extern volatile uint8_t coast_active;
+
+// DShot is decoded in the DMA ISR on V203. A coast request must either arrive before
+// a bridge transition (and make it a no-op) or after the complete transition (and
+// open the bridge last). Keeping IRQs masked across each top-level energizing primitive
+// closes the otherwise unsafe "ISR opens, interrupted writer resumes" window. ORBT
+// also rejects every energizing primitive while disarmed; allOff remains unconditional.
+static uint8_t beginBridgeDrive(uint32_t* interrupt_state)
+{
+    *interrupt_state = saveAndDisableInterrupts();
+    if (coast_request || coast_active
+#ifdef ORBT_ESC_V203
+        || !armed
+#endif
+    ) {
+        restoreInterrupts(*interrupt_state);
+        return 0;
+    }
+    return 1;
+}
+
+static void endBridgeDrive(uint32_t interrupt_state)
+{
+    restoreInterrupts(interrupt_state);
+}
 
 #ifndef PWM_ENABLE_BRIDGE
 
@@ -43,6 +71,10 @@ extern char prop_brake_active;
 
 void proportionalBrake()
 {
+    uint32_t interrupt_state;
+    if (!beginBridgeDrive(&interrupt_state)) {
+        return;
+    }
     // turn all HIGH channels off for ABC
     PHASE_A_GPIO_PORT_HIGH->CFGHR &= ~(0xf<<8); PHASE_A_GPIO_PORT_HIGH->CFGHR |= (0x3<<8);
     PHASE_A_GPIO_PORT_HIGH->HIGH_BITREG_OFF = PHASE_A_GPIO_HIGH;
@@ -58,11 +90,12 @@ void proportionalBrake()
     PHASE_A_GPIO_PORT_LOW->CFGLR  &= ~(0xf<<4); PHASE_A_GPIO_PORT_LOW->CFGLR|= (0xb<<4);
     PHASE_B_GPIO_PORT_LOW->CFGLR  &= ~(0xf<<0); PHASE_B_GPIO_PORT_LOW->CFGLR|= (0xb<<0);
     PHASE_C_GPIO_PORT_LOW->CFGLR  &= ~(0xf<<28); PHASE_C_GPIO_PORT_LOW->CFGLR|= (0xb<<28);
+    endBridgeDrive(interrupt_state);
 }
 
 
 
-void phaseBPWM()
+static void phaseBPWM()
 {
     if(!eepromBuffer.comp_pwm)
     {  // for future
@@ -76,16 +109,19 @@ void phaseBPWM()
     PHASE_B_GPIO_PORT_HIGH->CFGHR &= ~(0xf<<4); PHASE_B_GPIO_PORT_HIGH->CFGHR |= (0xb<<4);   //high pwm
 
 }
-void phaseBFLOAT()
+static void phaseBFLOAT()
 {
+    // Preload each GPIO output latch with the gate-OFF level before disconnecting
+    // the timer alternate function. Otherwise a stale OUTDR bit can pulse a gate at
+    // the mode switch.
+    PHASE_B_GPIO_PORT_LOW->LOW_BITREG_OFF = PHASE_B_GPIO_LOW;
     PHASE_B_GPIO_PORT_LOW->CFGLR  &= ~(0xf<<0); PHASE_B_GPIO_PORT_LOW->CFGLR|= (0x3<<0);
-     PHASE_B_GPIO_PORT_LOW->LOW_BITREG_OFF = PHASE_B_GPIO_LOW;  //low close
 
-     PHASE_B_GPIO_PORT_HIGH->CFGHR &= ~(0xf<<4); PHASE_B_GPIO_PORT_HIGH->CFGHR |= (0x3<<4);
-     PHASE_B_GPIO_PORT_HIGH->HIGH_BITREG_OFF = PHASE_B_GPIO_HIGH; //high close
+    PHASE_B_GPIO_PORT_HIGH->HIGH_BITREG_OFF = PHASE_B_GPIO_HIGH;
+    PHASE_B_GPIO_PORT_HIGH->CFGHR &= ~(0xf<<4); PHASE_B_GPIO_PORT_HIGH->CFGHR |= (0x3<<4);
 
 }
-void phaseBLOW()
+static void phaseBLOW()
 {
     // low mosfet on
     PHASE_B_GPIO_PORT_LOW->CFGLR  &= ~(0xf<<0); PHASE_B_GPIO_PORT_LOW->CFGLR|= (0x3<<0);
@@ -99,7 +135,7 @@ void phaseBLOW()
 //////////////////////////////PHASE
 /// 2//////////////////////////////////////////////////
 
-void phaseCPWM()
+static void phaseCPWM()
 {
     if (!eepromBuffer.comp_pwm)
     {
@@ -113,17 +149,17 @@ void phaseCPWM()
     PHASE_C_GPIO_PORT_HIGH->CFGHR &= ~(0xf<<0); PHASE_C_GPIO_PORT_HIGH->CFGHR |= (0xb<<0);
 }
 
-void phaseCFLOAT()
+static void phaseCFLOAT()
 {
     // floating
+    PHASE_C_GPIO_PORT_LOW->LOW_BITREG_OFF = PHASE_C_GPIO_LOW;
     PHASE_C_GPIO_PORT_LOW->CFGLR  &= ~(0xf<<28); PHASE_C_GPIO_PORT_LOW->CFGLR |= (0x3<<28);
-    PHASE_C_GPIO_PORT_LOW->LOW_BITREG_OFF = PHASE_C_GPIO_LOW;  //low close
 
+    PHASE_C_GPIO_PORT_HIGH->HIGH_BITREG_OFF = PHASE_C_GPIO_HIGH;
     PHASE_C_GPIO_PORT_HIGH->CFGHR &= ~(0xf<<0); PHASE_C_GPIO_PORT_HIGH->CFGHR |= (0x3<<0);
-    PHASE_C_GPIO_PORT_HIGH->HIGH_BITREG_OFF = PHASE_C_GPIO_HIGH;//high close
 }
 
-void phaseCLOW()
+static void phaseCLOW()
 {
     PHASE_C_GPIO_PORT_LOW->CFGLR  &= ~(0xf<<28); PHASE_C_GPIO_PORT_LOW->CFGLR |= (0x3<<28);
     PHASE_C_GPIO_PORT_LOW->LOW_BITREG_ON = PHASE_C_GPIO_LOW; //low on
@@ -135,7 +171,7 @@ void phaseCLOW()
 ///////////////////////////////////////////////PHASE 3
 ////////////////////////////////////////////////////
 
-void phaseAPWM()
+static void phaseAPWM()
 {
     if (!eepromBuffer.comp_pwm)
     {
@@ -149,16 +185,16 @@ void phaseAPWM()
     PHASE_A_GPIO_PORT_HIGH->CFGHR &= ~(0xf<<8); PHASE_A_GPIO_PORT_HIGH->CFGHR |= (0xb<<8); //high pwm
 }
 
-void phaseAFLOAT()
+static void phaseAFLOAT()
 {
+    PHASE_A_GPIO_PORT_LOW->LOW_BITREG_OFF = PHASE_A_GPIO_LOW;
     PHASE_A_GPIO_PORT_LOW->CFGLR  &= ~(0xf<<4); PHASE_A_GPIO_PORT_LOW->CFGLR|= (0x3<<4);
-    PHASE_A_GPIO_PORT_LOW->LOW_BITREG_OFF = PHASE_A_GPIO_LOW;  //low close
 
+    PHASE_A_GPIO_PORT_HIGH->HIGH_BITREG_OFF = PHASE_A_GPIO_HIGH;
     PHASE_A_GPIO_PORT_HIGH->CFGHR &= ~(0xf<<8); PHASE_A_GPIO_PORT_HIGH->CFGHR |= (0x3<<8);
-    PHASE_A_GPIO_PORT_HIGH->HIGH_BITREG_OFF = PHASE_A_GPIO_HIGH; //high close
 }
 
-void phaseALOW()
+static void phaseALOW()
 {
     PHASE_A_GPIO_PORT_LOW->CFGLR  &= ~(0xf<<4); PHASE_A_GPIO_PORT_LOW->CFGLR|= (0x3<<4);
     PHASE_A_GPIO_PORT_LOW->LOW_BITREG_ON = PHASE_A_GPIO_LOW;   // low on
@@ -170,7 +206,7 @@ void phaseALOW()
 #else
 
 //////////////////////////////////PHASE 1//////////////////////
-void phaseBPWM()
+static void phaseBPWM()
 {
     if (!eepromBuffer.comp_pwm)
     {
@@ -187,16 +223,16 @@ void phaseBPWM()
     PHASE_B_GPIO_PORT_HIGH->CFGHR &= ~(0xf<<4); PHASE_B_GPIO_PORT_HIGH->CFGHR |= (0xb<<4);   //high pwm
 }
 
-void phaseBFLOAT()
+static void phaseBFLOAT()
 {
+    PHASE_B_GPIO_PORT_LOW->LOW_BITREG_OFF = PHASE_B_GPIO_LOW;
     PHASE_B_GPIO_PORT_LOW->CFGLR  &= ~(0xf<<0); PHASE_B_GPIO_PORT_LOW->CFGLR|= (0x3<<0);
-     PHASE_B_GPIO_PORT_LOW->LOW_BITREG_OFF = PHASE_B_GPIO_LOW;  //low close
 
-     PHASE_B_GPIO_PORT_HIGH->CFGHR &= ~(0xf<<4); PHASE_B_GPIO_PORT_HIGH->CFGHR |= (0x3<<4);
-     PHASE_B_GPIO_PORT_HIGH->HIGH_BITREG_OFF = PHASE_B_GPIO_HIGH; //high close
+    PHASE_B_GPIO_PORT_HIGH->HIGH_BITREG_OFF = PHASE_B_GPIO_HIGH;
+    PHASE_B_GPIO_PORT_HIGH->CFGHR &= ~(0xf<<4); PHASE_B_GPIO_PORT_HIGH->CFGHR |= (0x3<<4);
 }
 
-void phaseBLOW()
+static void phaseBLOW()
 {
     // low mosfet on
     PHASE_B_GPIO_PORT_LOW->CFGLR  &= ~(0xf<<0); PHASE_B_GPIO_PORT_LOW->CFGLR|= (0x3<<0);
@@ -210,7 +246,7 @@ void phaseBLOW()
 //////////////////////////////PHASE
 /// 2//////////////////////////////////////////////////
 
-void phaseCPWM()
+static void phaseCPWM()
 {
     if (!eepromBuffer.comp_pwm)
     {
@@ -227,17 +263,17 @@ void phaseCPWM()
     PHASE_C_GPIO_PORT_HIGH->CFGHR &= ~(0xf<<0); PHASE_C_GPIO_PORT_HIGH->CFGHR |= (0xb<<0);
 }
 
-void phaseCFLOAT()
+static void phaseCFLOAT()
 {
     // floating
+    PHASE_C_GPIO_PORT_LOW->LOW_BITREG_OFF = PHASE_C_GPIO_LOW;
     PHASE_C_GPIO_PORT_LOW->CFGLR  &= ~(0xf<<28); PHASE_C_GPIO_PORT_LOW->CFGLR |= (0x3<<28);
-    PHASE_C_GPIO_PORT_LOW->LOW_BITREG_OFF = PHASE_C_GPIO_LOW;  //low close
 
+    PHASE_C_GPIO_PORT_HIGH->HIGH_BITREG_OFF = PHASE_C_GPIO_HIGH;
     PHASE_C_GPIO_PORT_HIGH->CFGHR &= ~(0xf<<0); PHASE_C_GPIO_PORT_HIGH->CFGHR |= (0x3<<0);
-    PHASE_C_GPIO_PORT_HIGH->HIGH_BITREG_OFF = PHASE_C_GPIO_HIGH;//high close
 }
 
-void phaseCLOW()
+static void phaseCLOW()
 {
     PHASE_C_GPIO_PORT_LOW->CFGLR  &= ~(0xf<<28); PHASE_C_GPIO_PORT_LOW->CFGLR |= (0x3<<28);
     PHASE_C_GPIO_PORT_LOW->LOW_BITREG_ON = PHASE_C_GPIO_LOW; //low on
@@ -249,7 +285,7 @@ void phaseCLOW()
 ///////////////////////////////////////////////PHASE 3
 ////////////////////////////////////////////////////
 
-void phaseAPWM()
+static void phaseAPWM()
 {
     if (!eepromBuffer.comp_pwm)
     {
@@ -266,16 +302,16 @@ void phaseAPWM()
     PHASE_A_GPIO_PORT_HIGH->CFGHR &= ~(0xf<<8); PHASE_A_GPIO_PORT_HIGH->CFGHR |= (0xb<<8); //high pwm
 }
 
-void phaseAFLOAT()
+static void phaseAFLOAT()
 {
+    PHASE_A_GPIO_PORT_LOW->LOW_BITREG_OFF = PHASE_A_GPIO_LOW;
     PHASE_A_GPIO_PORT_LOW->CFGLR  &= ~(0xf<<4); PHASE_A_GPIO_PORT_LOW->CFGLR|= (0x3<<4);
-    PHASE_A_GPIO_PORT_LOW->LOW_BITREG_OFF = PHASE_A_GPIO_LOW;  //low close
 
+    PHASE_A_GPIO_PORT_HIGH->HIGH_BITREG_OFF = PHASE_A_GPIO_HIGH;
     PHASE_A_GPIO_PORT_HIGH->CFGHR &= ~(0xf<<8); PHASE_A_GPIO_PORT_HIGH->CFGHR |= (0x3<<8);
-    PHASE_A_GPIO_PORT_HIGH->HIGH_BITREG_OFF = PHASE_A_GPIO_HIGH; //high close
 }
 
-void phaseALOW()
+static void phaseALOW()
 {
     PHASE_A_GPIO_PORT_LOW->CFGLR  &= ~(0xf<<4); PHASE_A_GPIO_PORT_LOW->CFGLR|= (0x3<<4);
     PHASE_A_GPIO_PORT_LOW->LOW_BITREG_ON = PHASE_A_GPIO_LOW;   // low on
@@ -289,13 +325,23 @@ void phaseALOW()
 
 void allOff()
 {
+    // PA7 (phase C low) shares GPIOA->CFGLR with the PA0 DShot pin. Keep the
+    // three-phase OFF transition atomic so neither side can restore a stale register
+    // snapshot after interrupting the other. Unlike drive primitives, OFF is never
+    // rejected by the coast latch.
+    uint32_t interrupt_state = saveAndDisableInterrupts();
     phaseAFLOAT();
     phaseBFLOAT();
     phaseCFLOAT();
+    restoreInterrupts(interrupt_state);
 }
 
 void comStep(int newStep)
 {
+    uint32_t interrupt_state;
+    if (!beginBridgeDrive(&interrupt_state)) {
+        return;
+    }
     switch (newStep) {
     case 1: // A-B
         phaseCFLOAT();
@@ -333,32 +379,53 @@ void comStep(int newStep)
         phaseAPWM();
         break;
     }
+    endBridgeDrive(interrupt_state);
 }
 
 void fullBrake()
 { // full braking shorting all low sides
+    uint32_t interrupt_state;
+    if (!beginBridgeDrive(&interrupt_state)) {
+        return;
+    }
     phaseALOW();
     phaseBLOW();
     phaseCLOW();
+    endBridgeDrive(interrupt_state);
 }
 
 void allpwm()
 { // for stepper_sine
+    uint32_t interrupt_state;
+    if (!beginBridgeDrive(&interrupt_state)) {
+        return;
+    }
     phaseAPWM();
     phaseBPWM();
     phaseCPWM();
+    endBridgeDrive(interrupt_state);
 }
 
 void twoChannelForward()
 {
+    uint32_t interrupt_state;
+    if (!beginBridgeDrive(&interrupt_state)) {
+        return;
+    }
     phaseAPWM();
     phaseBLOW();
     phaseCPWM();
+    endBridgeDrive(interrupt_state);
 }
 
 void twoChannelReverse()
 {
+    uint32_t interrupt_state;
+    if (!beginBridgeDrive(&interrupt_state)) {
+        return;
+    }
     phaseALOW();
     phaseBPWM();
     phaseCLOW();
+    endBridgeDrive(interrupt_state);
 }

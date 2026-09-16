@@ -2401,6 +2401,12 @@
 // add back the on-time lost to bridge dead time each PWM period (motoring direction)
 #define USE_DEADTIME_COMPENSATION
 #define DEADTIME_COMP_NS 1563 // -> 75 ticks of the 48MHz timer = DEAD_TIME; trim for FET switching delay
+// A reboot can happen while the rotor is windmilling. The normal AM32 startup
+// melody energizes fixed phase pairs, so this safety-oriented target boots silent.
+#define DISABLE_STARTUP_TUNE
+// Arming confirmation also uses the motor windings as a speaker. Keep reset/re-arm
+// traffic non-driving; explicit beacon commands remain available after a safe stop.
+#define DISABLE_ARMING_TUNE
 // #define USE_SPEED_CONTROL
 #endif
 

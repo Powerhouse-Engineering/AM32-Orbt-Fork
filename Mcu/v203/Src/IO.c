@@ -8,6 +8,7 @@
 #include "IO.h"
 
 #include "common.h"
+#include "interrupt.h"
 #include "dshot.h"
 #include "functions.h"
 #include "serial_telemetry.h"
@@ -24,11 +25,13 @@ void changeToOutput()
     INPUT_PIN_PORT->BSHR  = INPUT_PIN;
     uint32_t mul = INPUT_PIN*INPUT_PIN*INPUT_PIN*INPUT_PIN;
     uint32_t mask = 0xf * mul;
+    uint32_t interrupt_state = saveAndDisableInterrupts(); // CFGLR is shared with phase pins on this port: keep the read-modify-write atomic against comStep()
     INPUT_PIN_PORT->CFGLR &= ~mask;   //output HIGH first
     INPUT_PIN_PORT->CFGLR |= 0x3*mul;
 
 //    INPUT_PIN_PORT->CFGLR &= ~mask;
     INPUT_PIN_PORT->CFGLR |= 0x8*mul;          //then change to AF_PP
+    restoreInterrupts(interrupt_state);
 
     RCC_APB1PeriphResetCmd(RCC_APB1Periph_TIM2,ENABLE);
     RCC_APB1PeriphResetCmd(RCC_APB1Periph_TIM2,DISABLE);
@@ -51,8 +54,10 @@ void changeToInput()
     INPUT_PIN_PORT->BSHR = INPUT_PIN;
     uint32_t mul = INPUT_PIN*INPUT_PIN*INPUT_PIN*INPUT_PIN;
     uint32_t mask = 0xf * mul;
+    uint32_t interrupt_state = saveAndDisableInterrupts(); // CFGLR is shared with phase pins on this port: keep the read-modify-write atomic against comStep()
     INPUT_PIN_PORT->CFGLR &= ~mask;
     INPUT_PIN_PORT->CFGLR |= 0x4*mul;       //float in
+    restoreInterrupts(interrupt_state);
 
     if(servoPwm)
     {

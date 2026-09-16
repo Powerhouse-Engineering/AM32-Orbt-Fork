@@ -19,3 +19,6 @@ Keil_Projects/Listings
 *.o
 .DS_Store
 .vscode/settings.json
+
+# Python build-tool caches
+__pycache__/

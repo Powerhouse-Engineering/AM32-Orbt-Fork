@@ -117,6 +117,22 @@ void computeServoInput()
 
 void transfercomplete()
 {
+#ifdef MCU_CH32V203
+    if (inputSet && dshot_telemetry) {
+        // Decode the completed capture while the response DMA uses the separate
+        // gcr buffer. Deferring this to main lets a later RX overwrite dma_buffer
+        // or a DMA error cancel a command while main is still decoding it.
+        // Keep armed and disarmed paths identical across a coast release.
+        if (out_put) {
+            make_dshot_package(e_com_time);
+            receiveDshotDma();
+        } else {
+            sendDshotDma();
+            computeDshotDMA();
+        }
+        return;
+    }
+#endif
     if (armed && dshot_telemetry) {
         if (out_put) {
             receiveDshotDma();
@@ -170,12 +186,18 @@ void transfercomplete()
                     dshot_frametime_low = (average_packet_length >> 3) - (average_packet_length >> 7);
                 }
             }
+            if (dshot) {
+                return; // valid wire-zero counting belongs to computeDshotDMA()
+            }
             if (adjusted_input == 0 && calibration_required == 0) { // note this in input..not newinput so it
                                                                     // will be adjusted be main loop
                 zero_input_count++;
             } else {
                 zero_input_count = 0;
-                if (adjusted_input > 1500) {
+                // Throttle calibration is a servo-PWM feature. Letting unarmed DShot
+                // throttle enter it can play a phase-driving calibration tone and bypass
+                // the raw-zero arm required after a coast release.
+                if (servoPwm && (adjusted_input > 1500)) {
                     if (getAbsDif(adjusted_input, last_input) > 50) {
                         enter_calibration_count = 0;
                     } else {

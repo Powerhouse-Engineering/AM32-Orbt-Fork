@@ -15,6 +15,7 @@
 #include "targets.h"
 #include "common.h"
 #include "comparator.h"
+#include "dshot.h"
 extern void transfercomplete();
 extern void PeriodElapsedCallback();
 extern void interruptRoutine();
@@ -104,7 +105,22 @@ void DMA1_Channel1_IRQHandler(void)
 //for ic timer
 void DMA1_Channel5_IRQHandler(void)
 {
-    if(DMA1->INTFR & DMA1_IT_HT5) 
+    const uint32_t dma_flags = DMA1->INTFR;
+
+    // A transfer error can coexist with TC. Discard it before considering any
+    // completion flag so one stale/incomplete buffer can never be decoded twice or
+    // counted as a coast-release confirmation. Rearm capture without applying input.
+    if (dma_flags & DMA1_IT_TE5)
+    {
+        CLEAR_BIT(INPUT_DMA_CHANNEL->CFGR, 0x1);
+        DMA1->INTFCR = DMA1_IT_GL5;
+        rejectDshotCapture();
+        input_ready = 0;
+        receiveDshotDma();
+        return;
+    }
+
+    if(dma_flags & DMA1_IT_HT5)
     {
         if(servoPwm)
         {
@@ -112,19 +128,11 @@ void DMA1_Channel5_IRQHandler(void)
         }
         DMA1->INTFCR = DMA1_IT_HT5;
     }
-    if( DMA1->INTFR & DMA1_IT_TC5)
+    if(dma_flags & DMA1_IT_TC5)
     {
         CLEAR_BIT(INPUT_DMA_CHANNEL->CFGR,0x1);  //disable DMA1_CH5
         transfercomplete();
         DMA1->INTFCR = DMA1_IT_TC5;
-        input_ready = 1;
-    }
-    /* Check whether DMA transfer error caused the DMA interruption */
-    if( DMA1->INTFR & DMA1_IT_TE5)
-    {
-        CLEAR_BIT(INPUT_DMA_CHANNEL->CFGR,0x1);  //disable DMA1_CH5
-        DMA_ClearFlag(DMA1_IT_TE5);
-        transfercomplete( );
         input_ready = 1;
     }
 }

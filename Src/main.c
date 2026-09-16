@@ -219,6 +219,7 @@ an settings option)
 #include "ADC.h"
 #include "IO.h"
 #include "common.h"
+#include "interrupt.h"
 #include "comparator.h"
 #include "dshot.h"
 #include "eeprom.h"
@@ -441,6 +442,16 @@ uint8_t adc_counter = 0;
 char send_telemetry = 0;
 char telemetry_done = 0;
 char prop_brake_active = 0;
+#ifdef ORBT_ESC_V203
+// Reset/brownout must fail to an open bridge. The custom client must explicitly release
+// this boot latch before performing the ordinary raw-zero arming sequence.
+volatile uint8_t coast_request = 1;
+#else
+volatile uint8_t coast_request = 0;
+#endif
+volatile uint8_t coast_release_request = 0; // set only by six DSHOT_CMD_COAST_RELEASE frames
+volatile uint8_t coast_active = 0; // bridge is open; commutation ISRs must not drive it
+static volatile uint8_t drive_seen_since_arm = 0;
 
 char dshot_telemetry = 0;
 
@@ -590,6 +601,15 @@ int32_t doPidCalculations(struct fastPID* pidnow, int actual, int target)
         pidnow->pid_output = -pidnow->output_limit;
     }
     return pidnow->pid_output;
+}
+
+static void resetPidState(struct fastPID* pid)
+{
+    pid->error = 0;
+    pid->integral = 0;
+    pid->derivative = 0;
+    pid->last_error = 0;
+    pid->pid_output = 0;
 }
 
 void loadEEpromSettings()
@@ -823,7 +843,10 @@ void commutate()
         rising = !(step % 2);
     }
     __disable_irq(); // don't let dshot interrupt
-    if (!prop_brake_active) {
+    // `armed` is the final backstop for a comparator/COM interrupt that was already
+    // pending when releaseCoast masked its peripheral source. Normal motor startup is
+    // armed before its first commutation; passive coast tracking remains armed too.
+    if (armed && !prop_brake_active && !coast_request && !coast_active) {
         comStep(step);
     }
     __enable_irq();
@@ -908,8 +931,144 @@ void startMotor()
     enableCompInterrupts();
 }
 
+void requestCoast()
+{ // This can run inside the DShot DMA ISR. Make the hardware safe immediately, then
+  // let main complete the larger state reset at a deterministic loop boundary.
+    uint32_t interrupt_state = saveAndDisableInterrupts();
+    coast_request = 1;
+    prop_brake_active = 0;
+    allOff();
+    SET_DUTY_CYCLE_ALL(0);
+    restoreInterrupts(interrupt_state);
+}
+
+void coastMotor()
+{ // Command every gate off. Body diodes can still conduct if BEMF exceeds a supply rail.
+  // Passive comparator tracking is allowed to continue, but it is never trusted as proof of
+  // rest: leaving this state requires the separately confirmed release command.
+    uint32_t interrupt_state = saveAndDisableInterrupts(); // comStep() runs from the COM-timer and SysTick ISRs: make entry atomic
+    coast_request = 1;
+    coast_active = 1;
+    prop_brake_active = 0;
+    play_tone_flag = 0;
+    input = 0;
+    newinput = 0;
+    adjusted_input = 0;
+    input_override = 0;
+    stall_protection_adjust = 0;
+    use_current_limit_adjust = 2000;
+    resetPidState(&speedPid);
+    resetPidState(&stallPid);
+    resetPidState(&currentPid);
+    duty_cycle_setpoint = 0;
+    duty_cycle = 0;
+    last_duty_cycle = 0;
+    adjusted_duty_cycle = 0;
+    stepper_sine = 0;
+    drive_seen_since_arm = 0;
+    allOff();
+    SET_DUTY_CYCLE_ALL(0);
+    restoreInterrupts(interrupt_state);
+}
+
+void releaseCoast()
+{ // The FC has sent six explicit release frames and thereby asserted that restart is safe.
+  // Invalidate all windmilling state, leave the bridge open, and disarm. Only a fresh
+  // raw-zero arm interval can admit a later cold start; release itself never applies a brake.
+    uint32_t interrupt_state = saveAndDisableInterrupts();
+    // The DMA ISR may cancel the request after the caller checks it. Validate
+    // again under the same exclusion that protects clearing the latch.
+    if (!coast_release_request || !coast_request) {
+        restoreInterrupts(interrupt_state);
+        return;
+    }
+    coast_active = 1; // keep commutate() inhibited until every drive state is safe
+    prop_brake_active = 0;
+    play_tone_flag = 0;
+    input = 0;
+    newinput = 0;
+    adjusted_input = 0;
+    input_override = 0;
+    stall_protection_adjust = 0;
+    use_current_limit_adjust = 2000;
+    resetPidState(&speedPid);
+    resetPidState(&stallPid);
+    resetPidState(&currentPid);
+    duty_cycle_setpoint = 0;
+    duty_cycle = 0;
+    last_duty_cycle = 0;
+    adjusted_duty_cycle = 0;
+    allOff();
+    SET_DUTY_CYCLE_ALL(0);
+    maskPhaseInterrupts();
+    DISABLE_COM_TIMER_INT();
+    running = 0;
+    old_routine = 1;
+    zero_crosses = 0;
+    commutation_interval = 5000;
+    SET_INTERVAL_TIMER_COUNT(0);
+    stepper_sine = 0;
+    drive_seen_since_arm = 0;
+    // Release is not permission to drive. Require a fresh raw-zero arm interval so
+    // queued or stale throttle frames after the release sequence cannot start motion.
+    armed = 0;
+    armed_timeout_count = 0;
+    zero_input_count = 0;
+    dshot_arm_zero_count = 0;
+    coast_release_count = 0;
+    cell_count = 0;
+    coast_release_request = 0;
+    coast_request = 0;
+    coast_active = 0;
+    restoreInterrupts(interrupt_state);
+}
+
+void stopCoastTracking()
+{ // Link loss while coasting must fail open, not reboot into the phase-driving startup tune.
+    uint32_t interrupt_state = saveAndDisableInterrupts();
+    coast_request = 1;
+    coast_active = 1;
+    prop_brake_active = 0;
+    play_tone_flag = 0;
+    input = 0;
+    newinput = 0;
+    adjusted_input = 0;
+    input_override = 0;
+    stall_protection_adjust = 0;
+    use_current_limit_adjust = 2000;
+    resetPidState(&speedPid);
+    resetPidState(&stallPid);
+    resetPidState(&currentPid);
+    duty_cycle_setpoint = 0;
+    duty_cycle = 0;
+    last_duty_cycle = 0;
+    adjusted_duty_cycle = 0;
+    allOff();
+    SET_DUTY_CYCLE_ALL(0);
+    maskPhaseInterrupts();
+    DISABLE_COM_TIMER_INT();
+    running = 0;
+    old_routine = 1;
+    zero_crosses = 0;
+    commutation_interval = 5000;
+    stepper_sine = 0;
+    drive_seen_since_arm = 0;
+    coast_release_count = 0;
+    restoreInterrupts(interrupt_state);
+}
+
 void setInput()
 {
+    if (coast_release_request) {
+        releaseCoast();
+        return;
+    }
+    if (coast_request || coast_active) {
+        if (!coast_active) {
+            coastMotor();
+        }
+        return; // every ordinary input remains non-driving until the confirmed release
+    }
 
     if (eepromBuffer.bi_direction) {
         if (dshot == 0) {
@@ -1003,7 +1162,18 @@ void setInput()
                         newinput = 0;
                     }
                 }
-                adjusted_input = ((newinput - 1048) * 2 + 47) - reversing_dead_band;
+                // The reversal guard above can reject the frame by setting newinput to zero.
+                // Do not briefly publish an unsigned underflow to the control ISR.
+                if (newinput > 1047) {
+                    const uint16_t directional_input =
+                        ((newinput - 1048) * 2 + 47) - reversing_dead_band;
+                    // Both directional range endpoints are neutral in the existing
+                    // non-sine path. Preserve that behavior before sine remapping,
+                    // which would otherwise turn endpoint 46 back into drive.
+                    adjusted_input = (directional_input >= 47) ? directional_input : 0;
+                } else {
+                    adjusted_input = 0;
+                }
             }
             if (newinput <= 1047 && newinput > 47) {
                 if (forward == (1 - eepromBuffer.dir_reversed)) {
@@ -1017,7 +1187,13 @@ void setInput()
                         newinput = 0;
                     }
                 }
-                adjusted_input = ((newinput - 48) * 2 + 47) - reversing_dead_band;
+                if (newinput > 47) {
+                    const uint16_t directional_input =
+                        ((newinput - 48) * 2 + 47) - reversing_dead_band;
+                    adjusted_input = (directional_input >= 47) ? directional_input : 0;
+                } else {
+                    adjusted_input = 0;
+                }
             }
             if (newinput < 48) {
                 adjusted_input = 0;
@@ -1092,6 +1268,7 @@ void setInput()
 #ifndef BRUSHED_MODE
 if (!stepper_sine && armed) {
         if (input >= 47 + (80 * eepromBuffer.use_sine_start)) {
+            drive_seen_since_arm = 1;
             if (running == 0) {
                 allOff();
                 if (!old_routine) {
@@ -1160,7 +1337,7 @@ if (!stepper_sine && armed) {
                 if (!running) {
                     old_routine = 1;
                     zero_crosses = 0;
-                    if (eepromBuffer.brake_on_stop) {
+                    if (eepromBuffer.brake_on_stop && drive_seen_since_arm) {
                         fullBrake();
                     } else {
                         if (!prop_brake_active) {
@@ -1184,7 +1361,7 @@ if (!stepper_sine && armed) {
                     old_routine = 1;
                     zero_crosses = 0;
                     bad_count = 0;
-                    if (eepromBuffer.brake_on_stop) {
+                    if (eepromBuffer.brake_on_stop && drive_seen_since_arm) {
                         if (!eepromBuffer.use_sine_start) {
 #ifndef PWM_ENABLE_BRIDGE
                             prop_brake_duty_cycle = (1980) + eepromBuffer.drag_brake_strength * 2;
@@ -1249,18 +1426,36 @@ if (!stepper_sine && armed) {
 
 void tenKhzRoutine()
 { // 20khz as of 2.00 to be renamed
+    uint8_t wire_dshot_input = dshot;
+#if DRONECAN_SUPPORT
+    // DroneCAN overloads `dshot` as a 3D input-mapping selector. It does not put
+    // wire-zero packets through computeDshotDMA(), so do not apply this wire gate.
+    if (DroneCAN_active()) {
+        wire_dshot_input = 0;
+    }
+#endif
     duty_cycle = duty_cycle_setpoint;
     tenkhzcounter++;
     ledcounter++;
     one_khz_loop_counter++;
-    if (!armed) {
+    if (!armed && !coast_request && !coast_active) {
+        // The 31-packet qualifier alone is not a one-second arm interval: without
+        // this gap check it survives a disconnected wire while the timer advances.
+        // Require CRC-valid wire-zero traffic at least every 50 ms for the full arm.
+        if (wire_dshot_input && (signaltimeout > (LOOP_FREQUENCY_HZ / 20))) {
+            dshot_arm_zero_count = 0;
+            armed_timeout_count = 0;
+        }
         if (cell_count == 0) {
             if (inputSet) {
-                if (adjusted_input == 0) {
+                if ((adjusted_input == 0) && (!wire_dshot_input ||
+                    ((dshot_arm_zero_count > 30) &&
+                        (signaltimeout <= (LOOP_FREQUENCY_HZ / 20))))) {
                     armed_timeout_count++;
                     if (armed_timeout_count > LOOP_FREQUENCY_HZ) { // one second
                         if (zero_input_count > 30) {
                             armed = 1;
+                            drive_seen_since_arm = 0;
 #ifdef USE_LED_STRIP
                             //	send_LED_RGB(0,0,0);
                             delayMicros(1000);
@@ -1273,16 +1468,20 @@ void tenKhzRoutine()
 #endif
                             if ((cell_count == 0) && LOW_VOLTAGE_CUTOFF) {
                                 cell_count = battery_voltage / 370;
+#ifndef DISABLE_ARMING_TUNE
                                 for (int i = 0; i < cell_count; i++) {
                                     playInputTune();
                                     delayMillis(100);
                                     RELOAD_WATCHDOG_COUNTER();
                                 }
+#endif
                             } else {
+#ifndef DISABLE_ARMING_TUNE
 #ifdef MCU_AT415
-															play_tone_flag = 4;
+											play_tone_flag = 4;
 #else
-															playInputTune();
+											playInputTune();
+#endif
 #endif
                             }
                             if (!servoPwm) {
@@ -1336,7 +1535,7 @@ void tenKhzRoutine()
 #endif
         if (one_khz_loop_counter > PID_LOOP_DIVIDER) { // 1khz PID loop
             one_khz_loop_counter = 0;
-            if (use_current_limit && running) {
+            if (use_current_limit && running && !coast_active) {
                 use_current_limit_adjust -= (int16_t)(doPidCalculations(&currentPid, actual_current,
                                                           eepromBuffer.limits.current * 2 * 100)
                     / 10000);
@@ -1347,7 +1546,7 @@ void tenKhzRoutine()
                     use_current_limit_adjust = 2000;
                 }
             }
-            if (eepromBuffer.stall_protection && running) { // this boosts throttle as the rpm gets lower, for crawlers
+            if (eepromBuffer.stall_protection && running && !coast_active) { // this boosts throttle as the rpm gets lower, for crawlers
                                                // and rc cars only, do not use for multirotors.
                 stall_protection_adjust += (doPidCalculations(&stallPid, commutation_interval,
                                                stall_protect_target_interval));
@@ -1358,7 +1557,7 @@ void tenKhzRoutine()
                     stall_protection_adjust = 0;
                 }
             }
-            if (use_speed_control_loop && running) {
+            if (use_speed_control_loop && running && !coast_active) {
                 input_override += doPidCalculations(&speedPid, e_com_time, target_e_com_time);
                 if (input_override > 2047 * 10000) {
                     input_override = 2047 * 10000;
@@ -1448,7 +1647,9 @@ void tenKhzRoutine()
 #endif // ndef brushed_mode
 #if defined(FIXED_DUTY_MODE) || defined(FIXED_SPEED_MODE)
     if (getInputPinState()) {
-        signaltimeout++;
+        if (signaltimeout != 0xffff) {
+            signaltimeout++;
+        }
         if (signaltimeout > LOOP_FREQUENCY_HZ) {
             NVIC_SystemReset();
         }
@@ -1456,7 +1657,11 @@ void tenKhzRoutine()
         signaltimeout = 0;
     }
 #else
-    signaltimeout++;
+    // A coast can remain latched indefinitely after the input stream disappears.
+    // Saturation prevents the 16-bit counter wrapping and accidentally looking live again.
+    if (signaltimeout != 0xffff) {
+        signaltimeout++;
+    }
 
 #endif
 }
@@ -1675,6 +1880,12 @@ int main(void)
 
     initCorePeripherals();
 
+    // TIM1 is configured for complementary PWM with compare zero. Put every gate
+    // pin into its explicit target-specific OFF state before enabling TIM1's main
+    // outputs, otherwise the complementary low sides can conduct during boot.
+    allOff();
+    SET_DUTY_CYCLE_ALL(0);
+
     enableCorePeripherals();
 
     loadEEpromSettings();
@@ -1683,7 +1894,8 @@ int main(void)
         eepromBuffer.version.major = VERSION_MAJOR;
         eepromBuffer.version.minor = VERSION_MINOR;
         for (size_t i = 0; i < 12; i++) {
-            strlen(FIRMWARE_NAME) > i ? eepromBuffer.firmware_name[i] = (uint8_t)FIRMWARE_NAME[i] : 0;
+            eepromBuffer.firmware_name[i] = (i < strlen(FIRMWARE_NAME)) ?
+                (uint8_t)FIRMWARE_NAME[i] : 0;
         }
         saveEEpromSettings();
     }
@@ -1735,7 +1947,11 @@ int main(void)
 
 #ifdef USE_CRSF_INPUT
     inputSet = 1;
+#ifndef DISABLE_STARTUP_TUNE
     playStartupTune();
+#else
+    allOff();
+#endif
     MX_IWDG_Init();
     LL_IWDG_ReloadCounter(IWDG);
 #else
@@ -1765,7 +1981,11 @@ int main(void)
  #ifdef MCU_AT415
     play_tone_flag = 5;
  #else
+#ifndef DISABLE_STARTUP_TUNE
     playStartupTune();
+#else
+    allOff();
+#endif
 	#endif
 #endif
     zero_input_count = 0;
@@ -1817,6 +2037,17 @@ int main(void)
 
     while (1) {
 
+        // DShot decode can set either request in the DMA ISR. Handle it independently
+        // of input_ready so a frame arriving while main clears that flag cannot strand
+        // a safety transition. If entry and a fully confirmed release are both pending,
+        // finish the all-off entry transaction before executing the all-off release.
+        if (coast_request && !coast_active) {
+            coastMotor();
+        }
+        if (coast_release_request) {
+            releaseCoast();
+        }
+
 e_com_time = ((commutation_intervals[0] + commutation_intervals[1] + commutation_intervals[2] + commutation_intervals[3] + commutation_intervals[4] + commutation_intervals[5]) + 4) >> 1; // COMMUTATION INTERVAL IS 0.5US INCREMENTS
 #if defined(FIXED_DUTY_MODE) || defined(FIXED_SPEED_MODE)
         setInput();
@@ -1852,32 +2083,41 @@ if(zero_crosses < 5){
               tim1_arr = 250 * (CPU_FREQUENCY_MHZ/9);
           } 
         }
-        if (signaltimeout > (LOOP_FREQUENCY_HZ >> 1)) { // half second timeout when armed;
-            if (armed) {
-                allOff();
-                armed = 0;
-                input = 0;
-                inputSet = 0;
-                zero_input_count = 0;
-                SET_DUTY_CYCLE_ALL(0);
-                resetInputCaptureTimer();
-                for (int i = 0; i < 64; i++) {
-                    dma_buffer[i] = 0;
+        if (signaltimeout > (LOOP_FREQUENCY_HZ >> 1)) { // half second timeout when armed
+            if (coast_request || coast_active) {
+                // Never reboot from a held coast: boot-time motor tones energize phases. Stop
+                // passive tracking once, keep every gate off, and retain the release-only latch.
+                coast_release_count = 0; // a link gap breaks an incomplete release sequence
+                if (running || !coast_active) {
+                    stopCoastTracking();
                 }
-                NVIC_SystemReset();
-            }
-            if (signaltimeout > LOOP_FREQUENCY_HZ << 1) { // 2 second when not armed
-                allOff();
-                armed = 0;
-                input = 0;
-                inputSet = 0;
-                zero_input_count = 0;
-                SET_DUTY_CYCLE_ALL(0);
-                resetInputCaptureTimer();
-                for (int i = 0; i < 64; i++) {
-                    dma_buffer[i] = 0;
+            } else {
+                if (armed) {
+                    allOff();
+                    armed = 0;
+                    input = 0;
+                    inputSet = 0;
+                    zero_input_count = 0;
+                    SET_DUTY_CYCLE_ALL(0);
+                    resetInputCaptureTimer();
+                    for (int i = 0; i < 64; i++) {
+                        dma_buffer[i] = 0;
+                    }
+                    NVIC_SystemReset();
                 }
-                NVIC_SystemReset();
+                if (signaltimeout > LOOP_FREQUENCY_HZ << 1) { // 2 seconds when not armed
+                    allOff();
+                    armed = 0;
+                    input = 0;
+                    inputSet = 0;
+                    zero_input_count = 0;
+                    SET_DUTY_CYCLE_ALL(0);
+                    resetInputCaptureTimer();
+                    for (int i = 0; i < 64; i++) {
+                        dma_buffer[i] = 0;
+                    }
+                    NVIC_SystemReset();
+                }
             }
         }
 #ifdef USE_CUSTOM_LED
@@ -2031,6 +2271,7 @@ if(zero_crosses < 5){
                         running = 0;
                         zero_input_count = 0;
                         armed = 0;
+                        drive_seen_since_arm = 0;
                     }
                 } else {
                     low_voltage_count = 0;
@@ -2146,6 +2387,7 @@ if(zero_crosses < 5){
 #else
 
             if (input > 48 && armed) {
+                drive_seen_since_arm = 1;
 
                 if (input > 48 && input < 137) { // sine wave stepper
 
@@ -2193,7 +2435,7 @@ if(zero_crosses < 5){
 
             } else {
                 do_once_sinemode = 1;
-                if (eepromBuffer.brake_on_stop) {
+                if (eepromBuffer.brake_on_stop && drive_seen_since_arm) {
 #ifndef PWM_ENABLE_BRIDGE
                     duty_cycle = (TIMER1_MAX_ARR - 19) + eepromBuffer.drag_brake_strength * 2;
                     adjusted_duty_cycle = TIMER1_MAX_ARR - ((duty_cycle * tim1_arr) / TIMER1_MAX_ARR) + 1;
@@ -2204,8 +2446,8 @@ if(zero_crosses < 5){
                     // todo add braking for PWM /enable style bridges.
 #endif
                 } else {
-                    SET_DUTY_CYCLE_ALL(0);
                     allOff();
+                    SET_DUTY_CYCLE_ALL(0);
                 }
                 e_rpm = 0;
             }

@@ -34,6 +34,8 @@ extern char play_tone_flag;
 extern char send_esc_info_flag;
 uint8_t command_count = 0;
 uint8_t last_command = 0;
+volatile uint8_t coast_release_count = 0;
+volatile uint8_t dshot_arm_zero_count = 0;
 uint8_t high_pin_count = 0;
 uint32_t gcr[37] = { 0 };
 uint16_t dshot_frametime;
@@ -48,12 +50,24 @@ uint8_t programming_mode;
 uint16_t position;
 uint8_t  new_byte;
 
+void rejectDshotCapture()
+{
+    // A DMA transfer error is not a DShot frame. In particular, never let a stale
+    // command-16 buffer advance or complete the release authentication sequence.
+    dshotcommand = 0;
+    command_count = 0;
+    coast_release_count = 0;
+    coast_release_request = 0;
+    dshot_arm_zero_count = 0;
+    compute_dshot_flag = 0;
+    programming_mode = 0;
+}
+
 void computeDshotDMA()
 {
     dshot_frametime = dma_buffer[31] - dma_buffer[0];
     halfpulsetime = dshot_frametime >> 5;
     if ((dshot_frametime > dshot_frametime_low) && (dshot_frametime < dshot_frametime_high)) {
-			signaltimeout = 0;
         for (int i = 0; i < 16; i++) {
             // note that dma_buffer[] is uint32_t, we cast the difference to uint16_t to handle
             // timer wrap correctly
@@ -86,42 +100,124 @@ void computeDshotDMA()
             if (dpulse[11] == 1) {
                 send_telemetry = 1;
             }
-            if(programming_mode > 0){  
-                if(programming_mode == 1){ // begin programming mode
-                    position = tocheck;    // eepromBuffer position
-                    programming_mode = 2;
-                    return;
+            // Arming must be backed by actual valid wire-zero frames. Command frames also
+            // map to adjusted_input == 0, so the legacy zero_input_count alone is ambiguous.
+            // Frames ignored by a coast latch never contribute to a later re-arm.
+            if (!coast_request && (tocheck == 0)) {
+                if (dshot_arm_zero_count < 31) {
+                    dshot_arm_zero_count++;
                 }
-               if(programming_mode == 2){
-                    new_byte = tocheck;   // new value of setting
-                    programming_mode = 3;
-                    return;
-                }
-                if(programming_mode == 3){
-                    if(tocheck == 37){  // commit new values to eeprom. must use save settings to make permanent.
-                    eepromBuffer.buffer[position] = new_byte;
-                    programming_mode = 0;
-                  }
-                }
-                return; // don't process dshot signal when in programming mode
+            } else {
+                dshot_arm_zero_count = 0;
             }
-            if (tocheck > 47) {
-                if (EDT_ARMED) {
-                    newinput = tocheck;
-                    dshotcommand = 0;
-                    command_count = 0;
+            if (!armed) {
+                // Both normal and bidirectional DShot must qualify arming here.
+                // The telemetry branches in transfercomplete() return before its
+                // servo zero counter; after release that counter would stay zero.
+                zero_input_count = dshot_arm_zero_count;
+            }
+            if (coast_request) {
+                // Coast is a safety latch. Normal zero/throttle/command traffic must not be
+                // able to re-energize a windmilling motor. Only six valid release frames are
+                // accepted; everything else is ignored and breaks the release run.
+                newinput = 0;
+                dshotcommand = 0;
+                command_count = 0;
+                if (tocheck == DSHOT_CMD_COAST_RELEASE) {
+                    if (coast_release_count < 6) {
+                        coast_release_count++;
+                    }
+                    if (coast_release_count >= 6) {
+                        coast_release_count = 0;
+                        coast_release_request = 1;
+                        last_dshot_command = DSHOT_CMD_COAST_RELEASE;
+                    }
+                } else {
+                    coast_release_count = 0;
+                    if (tocheck == DSHOT_CMD_COAST) {
+                        // A renewed coast overrides a release that main has not
+                        // committed yet, even if all six 16s were already decoded.
+                        coast_release_request = 0;
+                    }
+                }
+                return;
+            }
+
+            if (programming_mode > 0) {
+                // Coast is a safety override even if command 36 left the decoder in
+                // EEPROM programming mode. The first 15 aborts programming and then
+                // participates in the normal six-frame coast confirmation. Release is
+                // still a complete no-op when no coast latch owns it.
+                if (tocheck == DSHOT_CMD_COAST) {
+                    programming_mode = 0;
+                } else if (tocheck == DSHOT_CMD_COAST_RELEASE) {
                     return;
+                } else {
+                    if (programming_mode == 1) { // begin programming mode
+                        position = tocheck; // eepromBuffer position
+                        programming_mode = 2;
+                        return;
+                    }
+                    if (programming_mode == 2) {
+                        new_byte = tocheck; // new value of setting
+                        programming_mode = 3;
+                        return;
+                    }
+                    if (programming_mode == 3) {
+                        if (tocheck == 37) { // commit; command 12 saves it permanently
+                            eepromBuffer.buffer[position] = new_byte;
+                            programming_mode = 0;
+                        }
+                    }
+                    return; // do not process ordinary DShot while programming
                 }
             }
 
+            if (tocheck > 47) {
+                // any throttle-range frame breaks a command run (also while EDT is not armed yet,
+                // otherwise one command frame plus five throttle frames would dispatch it)
+                dshotcommand = 0;
+                command_count = 0;
+                if (EDT_ARMED) {
+                    // BLHeli/Bluejay controllers commonly use wire value 48 as their armed
+                    // 1D stop value. Preserve raw 0 as the only arming value, and preserve
+                    // AM32's intentional value-48 neutral semantics in bidirectional mode.
+                    if ((tocheck == 48) && !eepromBuffer.bi_direction && armed) {
+                        newinput = 0;
+                    } else {
+                        newinput = tocheck;
+                    }
+                }
+                return;
+            }
+
             if ((tocheck <= 47) && (tocheck > 0)) {
-                newinput = 0;
-                dshotcommand = tocheck; //  todo
+                if (tocheck != last_command) { // a different command breaks the consecutive run, dispatched or not
+                    last_command = tocheck;
+                    command_count = 0;
+                }
+#if !defined(BRUSHED_MODE) && !defined(GIMBAL_MODE)
+                if ((tocheck == DSHOT_CMD_COAST) ||
+                    (tocheck == DSHOT_CMD_COAST_RELEASE)) {
+                    // Both custom state transitions are non-braking. COAST holds the prior
+                    // input until its sixth confirmation, including during sine startup.
+                    // RELEASE is a complete no-op unless the held-coast decoder above owns it.
+                } else {
+                    newinput = 0;
+                }
+#else
+                if (tocheck != DSHOT_CMD_COAST_RELEASE) {
+                    newinput = 0;
+                }
+#endif
+                dshotcommand = tocheck;
             }
             if (tocheck == 0) {
                 if (EDT_ARM_ENABLE == 1) {
                     EDT_ARMED = 0;
                 }
+                dshotcommand = 0; // a zero frame breaks a command run even when DroneCAN owns the throttle
+                command_count = 0;
 #if DRONECAN_SUPPORT
                 if (DroneCAN_active()) {
                     // allow DroneCAN to override DShot input
@@ -129,15 +225,24 @@ void computeDshotDMA()
                 }
 #endif
                 newinput = 0;
-                dshotcommand = 0;
-                command_count = 0;
             }
 
-            if ((dshotcommand > 0) && (running == 0) && armed) {
-                if (dshotcommand != last_command) {
-                    last_command = dshotcommand;
-                    command_count = 0;
-                }
+#if !defined(BRUSHED_MODE) && !defined(GIMBAL_MODE)
+#if DRONECAN_SUPPORT
+            const uint8_t coast_cmd = (dshotcommand == DSHOT_CMD_COAST) && !DroneCAN_active();
+#else
+            const uint8_t coast_cmd = (dshotcommand == DSHOT_CMD_COAST);
+#endif
+#else
+            const uint8_t coast_cmd = 0;
+#endif
+            const uint8_t normal_cmd = (dshotcommand != DSHOT_CMD_COAST) &&
+                (dshotcommand != DSHOT_CMD_COAST_RELEASE);
+            // Normal commands are only dispatched while armed and stopped. Coast is the
+            // safety exception: it is accepted while running and while disarmed, including
+            // during reset recovery before the ordinary arming sequence has completed.
+            if ((dshotcommand > 0) &&
+                (coast_cmd || (armed && normal_cmd && (running == 0)))) {
                 if (dshotcommand < 5) { // beacons
                     command_count = 6; // go on right away
                 }
@@ -203,6 +308,16 @@ void computeDshotDMA()
                     case 21:
                         forward = eepromBuffer.dir_reversed;
                         break;
+#if !defined(BRUSHED_MODE) && !defined(GIMBAL_MODE)
+                    case DSHOT_CMD_COAST:
+                        coast_release_count = 0;
+                        coast_release_request = 0;
+                        // Ordinary DShot decode runs in the V203 DMA ISR. Set the latch and
+                        // open the bridge immediately, but defer the larger controller-state
+                        // transaction to main so interrupted main-loop state cannot overwrite it.
+                        requestCoast();
+                        break;
+#endif
                     case 36:
                         programming_mode = 1;
               //          armed = 0;           // disarm when entering programming mode
