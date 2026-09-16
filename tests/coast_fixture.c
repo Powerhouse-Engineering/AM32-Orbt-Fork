@@ -62,7 +62,8 @@ void maskPhaseInterrupts(void) {}
 #define SET_DUTY_CYCLE_ALL(x) (compare_value = (x))
 #define DISABLE_COM_TIMER_INT() ((void)0)
 #define SET_INTERVAL_TIMER_COUNT(x) ((void)(x))
-int getInputPinState(void) { return 0; }
+int input_pin_high;
+int getInputPinState(void) { return input_pin_high; }
 void saveEEpromSettings(void) {}
 void playDefaultTone(void) {}
 void playChangedTone(void) {}
@@ -104,9 +105,35 @@ static void reset(void) {
     irq_state = 1;
     inject_error_on_disable = off_calls = 0;
     average_count = 8;
+    input_pin_high = 0;
 }
 static void enter(void) { for (int i = 0; i < 6; ++i) decode(15); coastMotor(); }
 static void confirm_release(void) { for (int i = 0; i < 6; ++i) decode(16); }
+
+static void wire_frame(unsigned value) {
+    // Fixed inverted CRC and idle-high wire, independent of ESC discovery state.
+    unsigned payload = value << 1;
+    unsigned crc = ((payload ^ (payload >> 4) ^ (payload >> 8)) & 15) ^ 15;
+    unsigned frame = (payload << 4) | crc;
+    // Initial V203 capture prescaler is 6 (48/8), then detection selects PSC=0.
+    unsigned divisor = inputSet ? 1 : 7;
+    for(unsigned i=0;i<16;i++) {
+        dma_buffer[2*i] = 80*i/divisor;
+        dma_buffer[2*i+1] = (80*i + ((frame & (1u << (15-i))) ? 60 : 30))/divisor;
+    }
+    assert(out_put == 0);
+    transfercomplete();
+    if(out_put) transfercomplete();
+    if(coast_release_request) releaseCoast();
+    for(unsigned i=0;i<20;i++) { armTick(); signaltimeout++; }
+}
+static void cold_boot(void) {
+    reset(); input_pin_high = 1; armed = running = 0; coast_request = 1; coastMotor();
+    dshot = inputSet = dshot_telemetry = out_put = high_pin_count = 0;
+    dshot_goodcounts = dshot_badcounts = 0;
+    dshot_frametime_low = 0; dshot_frametime_high = 50000;
+    average_count = average_packet_length = 0;
+}
 
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -234,5 +261,19 @@ int main(void) {
     decode(48); assert(newinput == 48);
     decode(1048); assert(newinput == 1048);
     puts("PASS: 1D stop alias preserves 3D wire endpoints");
+    // Cross-repository protocol regression: a release API called immediately
+    // after cold boot must let the ESC discover inverted CRC before command16.
+    cold_boot();
+    for (unsigned i=0;i<24;i++) wire_frame(16);
+    for (unsigned i=0;i<2000;i++) wire_frame(0);
+    assert(dshot_telemetry && coast_request && !armed);
+    cold_boot();
+    for (unsigned i=0;i<256;i++) wire_frame(0);
+    assert(inputSet && dshot_telemetry && coast_request && !armed);
+    for (unsigned i=0;i<24;i++) wire_frame(16);
+    assert(!coast_request && !armed);
+    for (unsigned i=0;i<2000;i++) wire_frame(0);
+    assert(!coast_request && armed);
+    puts("PASS: cold-boot link priming permits release/rearm; unprimed release stays latched");
     return 0;
 }
