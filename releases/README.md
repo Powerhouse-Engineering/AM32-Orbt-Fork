@@ -17,9 +17,9 @@ start at `0x0`. Gaps in BIN files are filled with `0xFF`.
 - `_With_Bootloader_M1` and `_M2` replace the bootloader and the respective
   packaged motor configuration as well as the application. Select the correct
   motor image; these are not interchangeable configuration files.
-- The 1.0.0 `_rebuilt` image is a new build of the original tagged source, not
-  a recovered historical binary. The archived 1.0.1, 1.2.0, and 1.3.0 app HEX
-  files have been reproduced byte-for-byte.
+- The 1.0.0 `_rebuilt` image matches the original 2025-08-03 HEX recovered
+  from Downloads byte-for-byte. The filename is retained for build provenance.
+  Archived 1.0.1, 1.2.0, and 1.3.0 app HEX files also reproduce byte-for-byte.
 - The 1.4.x coast protocol starts latched off and needs an explicit release
   and rearm. Read [the protocol](../doc/dshot-coast-command.md) before use.
 

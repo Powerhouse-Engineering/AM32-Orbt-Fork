@@ -331,5 +331,11 @@
         "00001000"
       ]
     ]
+  },
+  "archive_verification": {
+    "original_file": "Am32V203_Orbt_ESC__2025_8_3__1.0.0.hex",
+    "original_sha256": "76fc4d2cbdd695d08358880ca98af2302702ee58e3f42351edec3f476a8d5852",
+    "rebuilt_file_identical": true,
+    "note": "Original located in Downloads during final archive verification; _rebuilt filename retained for provenance."
   }
 }

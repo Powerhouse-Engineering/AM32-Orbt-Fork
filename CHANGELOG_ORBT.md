@@ -18,6 +18,8 @@ are archived under [releases](releases/README.md).
   RAM stays at 4440 bytes. Standalone WCH GCC 12 builds without warnings.
 - Archive app-only and M1/M2 bootloader/config HEX and BIN images, checksums,
   and build provenance. The published application reproduces byte-for-byte.
+- Preserve exact release-file bytes in Git, including HEX line endings, so
+  checksums agree between the branch archive and GitHub release downloads.
 
 This fix is not on the V203 bidirectional frame-learning path and is not a
 proven fix for the bench controller's `rpm_feedback_lost` event. Version
@@ -72,5 +74,6 @@ coast torque have not been measured. MOSFET body diodes remain connected.
 ## 1.0.0 — Initial Orbt control choice
 
 - Disable speed control (`69841f7`), tagged **Orbt_ESC_1.0.0**.
-- A separately labeled `_rebuilt` image is built from that original tag for
-  this archive. No original 1.0.0 binary was available for bitwise comparison.
+- The `_rebuilt` image is built from the original tag and matches the original
+  `Am32V203_Orbt_ESC__2025_8_3__1.0.0.hex` found in Downloads byte-for-byte.
+  Its build provenance records that comparison; the filename is retained.
